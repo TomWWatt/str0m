@@ -138,6 +138,10 @@ pub struct StreamTx {
     /// Requested padding, that has not been turned into packets yet.
     padding: usize,
 
+    /// The application asked for padding (request_padding) since the last timeout: the pacer
+    /// has not seen it yet.
+    padding_requested: bool,
+
     /// Dummy packet for resends. Used between poll_packet and poll_packet_padding
     blank_packet: RtpPacket,
 
@@ -378,6 +382,7 @@ impl StreamTx {
             unpaced: None,
             resends: VecDeque::new(),
             padding: 0,
+            padding_requested: false,
             blank_packet: RtpPacket::blank(),
             rtx_cache: RtxCache::new(2000, DEFAULT_RTX_CACHE_DURATION),
             rtx_ratio_cap: DEFAULT_RTX_RATIO_CAP,
@@ -485,6 +490,21 @@ impl StreamTx {
     /// This overrides the default behavior.
     pub fn set_unpaced(&mut self, unpaced: bool) {
         self.unpaced = Some(unpaced);
+    }
+
+    /// Ask for `bytes` of padding: resends of recently sent packets, or blank padding packets,
+    /// sent after this stream's due media and resends. For an application that probes a path
+    /// itself: without BWE nothing paces the padding, so ask for small amounts at the rate
+    /// wanted. Returns false when the stream cannot pad yet: it needs an RTX stream and a
+    /// payload type with RTX to pad with, known from the first timeout after negotiation or
+    /// from the first regular packet sent.
+    pub fn request_padding(&mut self, bytes: usize) -> bool {
+        if !self.padding_enabled() {
+            return false;
+        }
+        self.generate_padding(bytes);
+        self.padding_requested = true;
+        true
     }
 
     /// Write RTP packet to a send stream.
@@ -1275,7 +1295,7 @@ impl StreamTx {
     }
 
     pub(crate) fn need_timeout(&self) -> bool {
-        self.send_queue.need_timeout()
+        self.send_queue.need_timeout() || self.padding_requested
     }
 
     pub(crate) fn handle_timeout<'a>(
@@ -1290,6 +1310,7 @@ impl StreamTx {
         }
 
         self.send_queue.handle_timeout(now);
+        self.padding_requested = false;
     }
 
     fn on_first_timeout(&mut self, media: &Media, config: &CodecConfig) {
