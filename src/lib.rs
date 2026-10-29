@@ -1055,6 +1055,10 @@ pub enum Event {
     /// is opaque and application-defined (RFC 4585 Section 6.4).
     AppSpecificFeedback(AppSpecificFeedback),
 
+    /// Transport-wide feedback (TWCC) from the remote peer, one event per report, when enabled
+    /// with [`RtcConfig::enable_twcc_feedback_events()`]. Emitted with or without BWE.
+    TwccFeedback(bwe::TwccFeedback),
+
     /// The remote DTLS connection or SCTP association has closed.
     ///
     /// When this event is emitted, `Rtc` starts local shutdown signals and
@@ -1567,6 +1571,17 @@ impl Rtc {
         }
     }
 
+    /// The RTP packet the last [`Rtc::poll_output()`] handed out as an [`Output::Transmit`]:
+    /// its transport-wide sequence number and whether it is padding. `None` when that output
+    /// was anything else.
+    ///
+    /// An application that holds packets before sending them (its own pacer) records the
+    /// moment each one really leaves against the sequence number and matches it with
+    /// [`Event::TwccFeedback`].
+    pub fn last_sent_packet(&self) -> Option<bwe::SentPacket> {
+        self.session.last_sent_packet()
+    }
+
     /// Poll the `Rtc` instance for output. Output can be three things, something to _Transmit_
     /// via a UDP socket (maybe via a TURN server). An _Event_, such as receiving media data,
     /// or a _Timeout_.
@@ -1583,6 +1598,7 @@ impl Rtc {
     ///
     /// See [`Rtc`] instance documentation for how this is expected to be used in a loop.
     pub fn poll_output(&mut self) -> Result<Output, RtcError> {
+        self.session.forget_last_sent_packet();
         // SCTP packets fed into DTLS require another pass. Loop here so a large
         // batch does not grow the stack with one recursive call per packet.
         let o = loop {

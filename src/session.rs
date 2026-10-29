@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::Event;
 use crate::bwe::BweKind;
+use crate::bwe::{SentPacket, TwccFeedback, TwccPacket};
 use crate::bwe_::Bwe;
 use crate::config::KeyingMaterial;
 use crate::config_mod::RtcpReportIntervals;
@@ -46,6 +47,9 @@ use crate::{RtcConfig, RtcError};
 /// Minimum interval between NACK polls. Per-packet retries also wait for RTT.
 /// Keep this high enough to avoid additional problems in very bad network conditions.
 const NACK_MIN_INTERVAL: Duration = Duration::from_millis(33);
+
+/// TWCC feedback events kept for an application that does not poll them; the oldest go first.
+const MAX_PENDING_TWCC_FEEDBACK: usize = 100;
 
 /// Delay between reports of TWCC. This is deliberately very low.
 const TWCC_INTERVAL: Duration = Duration::from_millis(50);
@@ -138,6 +142,12 @@ pub(crate) struct Session {
     // Pending application-specific feedback (PSFB FMT=15) messages to emit as events.
     pending_app_feedback: Option<AppSpecificFeedback>,
 
+    // TWCC feedback for the application (RtcConfig::enable_twcc_feedback_events), and what the
+    // last poll_output transmitted, so the application can match the two.
+    twcc_feedback_events: bool,
+    pending_twcc_feedback: VecDeque<TwccFeedback>,
+    last_sent_packet: Option<SentPacket>,
+
     /// Target MTU (start) and warn threshold (end). Buffer sizing uses the
     /// target; oversized outgoing datagrams above the warn threshold log a warning.
     mtu: RangeInclusive<usize>,
@@ -224,6 +234,9 @@ impl Session {
                 None
             },
             pending_app_feedback: None,
+            twcc_feedback_events: config.twcc_feedback_events,
+            pending_twcc_feedback: VecDeque::new(),
+            last_sent_packet: None,
             mtu: config.mtu.clone(),
             #[cfg(feature = "_internal_test_exports")]
             pending_probe: None,
@@ -941,10 +954,29 @@ impl Session {
 
             if let RtcpFb::Twcc(twcc) = fb {
                 trace!("Handle TWCC: {:?}", twcc);
-                let maybe_records = self.twcc_tx_register.apply_report(twcc, now);
-
-                if let (Some(maybe_records), Some(bwe)) = (maybe_records, &mut self.bwe) {
-                    bwe.update(maybe_records, now);
+                let mut packets = self.twcc_feedback_events.then(Vec::new);
+                if let Some(records) = self.twcc_tx_register.apply_report(twcc, now) {
+                    let records = records.inspect(|r| {
+                        if let Some(packets) = packets.as_mut() {
+                            packets.push(TwccPacket {
+                                seq: *r.seq(),
+                                size: r.size(),
+                                sent: r.local_send_time(),
+                                received: r.remote_recv_time(),
+                            });
+                        }
+                    });
+                    match &mut self.bwe {
+                        Some(bwe) => bwe.update(records, now),
+                        None => records.for_each(drop),
+                    }
+                }
+                if let Some(packets) = packets.filter(|p| !p.is_empty()) {
+                    if self.pending_twcc_feedback.len() >= MAX_PENDING_TWCC_FEEDBACK {
+                        self.pending_twcc_feedback.pop_front();
+                    }
+                    self.pending_twcc_feedback
+                        .push_back(TwccFeedback { packets });
                 }
                 need_configure_pacer = true;
 
@@ -1050,6 +1082,10 @@ impl Session {
 
         if let Some(feedback) = self.pending_app_feedback.take() {
             return Some(Event::AppSpecificFeedback(feedback));
+        }
+
+        if let Some(feedback) = self.pending_twcc_feedback.pop_front() {
+            return Some(Event::TwccFeedback(feedback));
         }
 
         // This must be before pending_packet.take() since we need to emit the unpaused event
@@ -1285,6 +1321,10 @@ impl Session {
             self.twcc_tx_register
                 .register_seq(packet_id, now, payload_size);
         }
+        self.last_sent_packet = Some(SentPacket {
+            twcc_seq: twcc_enabled.then_some(twcc_seq),
+            padding: is_padding,
+        });
 
         // Update BWE subsystem
         if let Some(bwe) = self.bwe.as_mut() {
@@ -1296,6 +1336,15 @@ impl Session {
         }
 
         Some(protected.into())
+    }
+
+    /// What the last poll_output transmitted, when it was an RTP packet (Rtc::last_sent_packet).
+    pub(crate) fn last_sent_packet(&self) -> Option<SentPacket> {
+        self.last_sent_packet
+    }
+
+    pub(crate) fn forget_last_sent_packet(&mut self) {
+        self.last_sent_packet = None;
     }
 
     pub fn poll_timeout(&mut self) -> (Option<Instant>, Reason) {

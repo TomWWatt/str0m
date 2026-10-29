@@ -54,6 +54,7 @@ pub struct RtcConfig {
     pub(crate) sctp_max_message_size: u32,
     pub(crate) rtp_mode: bool,
     pub(crate) enable_raw_packets: bool,
+    pub(crate) twcc_feedback_events: bool,
     pub(crate) dtls_version: DtlsVersion,
     pub(crate) vp9_packetizer_mode: Vp9PacketizerMode,
     pub(crate) snap_enabled: bool,
@@ -760,6 +761,30 @@ impl RtcConfig {
         self
     }
 
+    /// Enable the [`Event::TwccFeedback`][crate::Event::TwccFeedback] event: transport-wide
+    /// feedback from the remote peer, one event per report, whether BWE is enabled or not.
+    ///
+    /// For an application that paces its own sending and judges the link from the feedback
+    /// itself. It matches each reported packet to the moment it really left with
+    /// [`Rtc::last_sent_packet()`][crate::Rtc::last_sent_packet].
+    ///
+    /// ```
+    /// # use str0m::Rtc;
+    /// let config = Rtc::builder();
+    ///
+    /// // Defaults to false.
+    /// assert_eq!(config.twcc_feedback_events(), false);
+    /// ```
+    pub fn enable_twcc_feedback_events(mut self, enabled: bool) -> Self {
+        self.twcc_feedback_events = enabled;
+        self
+    }
+
+    /// Whether [`Event::TwccFeedback`][crate::Event::TwccFeedback] is emitted.
+    pub fn twcc_feedback_events(&self) -> bool {
+        self.twcc_feedback_events
+    }
+
     /// Enable SNAP (SCTP Negotiation Acceleration Protocol).
     ///
     /// When enabled, the `a=sctp-init` attribute is included in outgoing SDP
@@ -906,6 +931,7 @@ impl Default for RtcConfig {
             sctp_max_message_size: crate::sctp::LOCAL_MAX_MESSAGE_SIZE,
             rtp_mode: false,
             enable_raw_packets: false,
+            twcc_feedback_events: false,
             dtls_version: DtlsVersion::Dtls12,
             vp9_packetizer_mode: Vp9PacketizerMode::default(),
             snap_enabled: false,

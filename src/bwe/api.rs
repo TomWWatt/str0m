@@ -1,5 +1,7 @@
 //! Bandwidth estimation.
 
+use std::time::Instant;
+
 use crate::poll::RtcMut;
 use crate::{Rtc, rtp_::Mid};
 
@@ -34,6 +36,46 @@ pub enum BweKind {
         /// Media section associated with the report.
         mid: Mid,
     },
+}
+
+/// Transport-wide feedback (TWCC) from the remote peer: the packets one report brings news of.
+/// A packet reported as received is not repeated; one reported as lost appears again when a
+/// later report covers it, as received or still lost.
+///
+/// Emitted as [`Event::TwccFeedback`][crate::Event::TwccFeedback] when enabled with
+/// [`RtcConfig::enable_twcc_feedback_events()`][crate::RtcConfig::enable_twcc_feedback_events],
+/// with or without BWE: for an application that paces its own sending and judges the link from
+/// the feedback itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TwccFeedback {
+    /// The packets, in sequence order.
+    pub packets: Vec<TwccPacket>,
+}
+
+/// One packet of a [`TwccFeedback`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TwccPacket {
+    /// The transport-wide sequence number, as [`Rtc::last_sent_packet()`] gave it when the
+    /// packet went out.
+    pub seq: u64,
+    /// The payload size in bytes.
+    pub size: usize,
+    /// When `poll_output()` handed the packet out.
+    pub sent: Instant,
+    /// When the remote received it, on the remote's clock with an arbitrary origin, so only the
+    /// differences between packets mean anything. `None` when it did not arrive.
+    pub received: Option<Instant>,
+}
+
+/// The RTP packet the last [`Rtc::poll_output()`] handed out as an
+/// [`Output::Transmit`][crate::Output::Transmit]. See [`Rtc::last_sent_packet()`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentPacket {
+    /// Its transport-wide sequence number, when the transport-cc extension is negotiated for
+    /// its media.
+    pub twcc_seq: Option<u64>,
+    /// Whether it is padding rather than media or a resend of lost media.
+    pub padding: bool,
 }
 
 /// Access to the Bandwidth Estimate subsystem.
