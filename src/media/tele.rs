@@ -79,6 +79,7 @@ impl TelephonePackets {
             rtp_time,
             not_before: Some(not_before),
             start_of_talk_spurt: marker,
+            no_resends_before: false,
             data,
             ext_vals: self.ext_vals.clone(),
         }

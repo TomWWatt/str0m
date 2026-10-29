@@ -27,6 +27,7 @@ pub struct Writer<'a> {
     mid: Mid,
     rid: Option<Rid>,
     start_of_talkspurt: Option<bool>,
+    no_resends_before: bool,
     tele_event: Option<TelephoneEvent>,
     ext_vals: ExtensionValues,
 }
@@ -45,6 +46,7 @@ impl<'a> Writer<'a> {
             mid,
             rid: None,
             start_of_talkspurt: None,
+            no_resends_before: false,
             tele_event: None,
             ext_vals: ExtensionValues::default(),
         }
@@ -101,6 +103,16 @@ impl<'a> Writer<'a> {
     /// This will set the marker bit in the RTP header.
     pub fn start_of_talkspurt(mut self, start_of_talkspurt: bool) -> Self {
         self.start_of_talkspurt = Some(start_of_talkspurt);
+        self
+    }
+
+    /// The packets written before this frame are never resent: NACKs for them go unanswered,
+    /// resends queued for them are dropped, and the bytes resent for them stop counting against
+    /// the RTX ratio cap. For a frame the receiver decodes without what came before, such as the
+    /// keyframe where a sender switches the stream to a smaller source because the path has no
+    /// room: resending what that frame replaces would spend the room it needs.
+    pub fn no_resends_before(mut self, no_resends_before: bool) -> Self {
+        self.no_resends_before = no_resends_before;
         self
     }
 
@@ -228,6 +240,7 @@ impl<'a> Writer<'a> {
                 not_before: None,
                 data,
                 start_of_talk_spurt: self.start_of_talkspurt.unwrap_or(false),
+                no_resends_before: self.no_resends_before,
                 ext_vals: self.ext_vals.clone(),
             })?;
         }

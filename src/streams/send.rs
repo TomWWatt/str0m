@@ -145,6 +145,9 @@ pub struct StreamTx {
     /// sending spurious resends as padding.
     rtx_cache: RtxCache,
 
+    /// Packets numbered below this are never cached for resends (forget_resends).
+    resend_floor: SeqNo,
+
     /// Determines retransmitted bytes ratio value to clear queued resends.
     rtx_ratio_cap: Option<f32>,
 
@@ -380,6 +383,7 @@ impl StreamTx {
             padding: 0,
             blank_packet: RtpPacket::blank(),
             rtx_cache: RtxCache::new(2000, DEFAULT_RTX_CACHE_DURATION),
+            resend_floor: 0.into(),
             rtx_ratio_cap: DEFAULT_RTX_RATIO_CAP,
             last_sender_report: already_happened(),
             pending_request_keyframe: None,
@@ -811,7 +815,7 @@ impl StreamTx {
                 .send_queue
                 .pop(now)
                 .expect("head of send_queue to be there");
-            if pkt.nackable {
+            if pkt.nackable && pkt.seq_no >= self.resend_floor {
                 self.rtx_cache.cache_sent_packet(pkt, now);
             }
         }
@@ -1267,6 +1271,20 @@ impl StreamTx {
         self.pt_for_padding
     }
 
+    /// The packets numbered so far are never resent, whether sent yet or not: NACKs for them go
+    /// unanswered, resends queued for them are dropped, and the bytes resent for them stop
+    /// counting against the RTX ratio cap. Called before the frame mode numbers a frame written
+    /// with `Writer::no_resends_before`.
+    pub(crate) fn forget_resends(&mut self) {
+        self.rtx_cache.clear();
+        self.resends.clear();
+        self.resend_floor = self.seq_no;
+        if let Some(h) = &mut self.stats.bytes_retransmitted {
+            *h = ValueHistory::default();
+        }
+        self.rtx_ratio = (0.0, already_happened());
+    }
+
     pub(crate) fn generate_padding(&mut self, padding: usize) {
         if !self.padding_enabled() {
             return;
@@ -1339,6 +1357,7 @@ impl StreamTx {
         // Reset sequence numbers
         self.seq_no = SeqNo::default();
         self.seq_no_rtx = SeqNo::default();
+        self.resend_floor = 0.into();
 
         // Reset timing related fields
         self.last_used = already_happened();

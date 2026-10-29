@@ -208,6 +208,9 @@ pub(crate) struct ToPayload {
     /// spread updates over the event duration; regular media has no deadline.
     pub not_before: Option<Instant>,
     pub start_of_talk_spurt: bool,
+    /// The stream forgets the packets before this frame for resends
+    /// (`Writer::no_resends_before`).
+    pub no_resends_before: bool,
     pub data: Arc<[u8]>,
     pub ext_vals: ExtensionValues,
 }
@@ -611,6 +614,10 @@ impl Media {
         let Some(stream) = stream else {
             return Err(RtcError::NoSenderSource);
         };
+
+        if to_payload.no_resends_before {
+            stream.forget_resends();
+        }
 
         let pt = *pt;
 
